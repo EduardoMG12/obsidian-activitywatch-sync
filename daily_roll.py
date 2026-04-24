@@ -362,18 +362,23 @@ def archive_and_create_next(current_file: Path, target_date: date, aw_data: dict
     content = current_file.read_text(encoding="utf-8")
     fm, body = parse_frontmatter(content)
 
-    aw_section = "\n\n## AW\n\n"
+    aw_lines = ["", "## AW", ""]
     if aw_data:
-        aw_section += f"**Total:** {aw_data['total_hours']}h\n\n"
-        aw_section += "| Category | h |\n|----------|---|\n"
+        aw_lines.append(f"Total: {aw_data['total_hours']}h")
+        aw_lines.append("")
         for cat in cats:
             v = aw_data["metrics"].get(cat, 0)
             if v > 0:
                 label = cats.get(cat, {}).get("label", cat)
-                aw_section += f"| {label} | {v} |\n"
-        aw_section += f"\n**Top apps:** {', '.join([f'{a} ({t})' for a, t in aw_data['top_apps']])}\n"
+                emoji = cats.get(cat, {}).get("emoji", "")
+                aw_lines.append(f"- {emoji} {label}: {v}h")
+        top = aw_data['top_apps']
+        if top:
+            aw_lines.append("")
+            aw_lines.append(f"Apps: {', '.join([f'{a} ({t})' for a, t in top])}")
     else:
-        aw_section += "ActivityWatch offline.\n"
+        aw_lines.append("ActivityWatch offline.")
+    aw_section = "\n".join(aw_lines) + "\n"
 
     llm_section = f"\n\n## LLM\n\n{llm_text}\n"
     archived = content.rstrip() + aw_section + llm_section
@@ -391,16 +396,11 @@ date: {next_date.isoformat()}
 mood:
 energy:
 focus:
-win_of_the_day:
 ---
 
 # {next_date.isoformat()}
 
-> 🎯 **Focus:**
-
----
-
-## 🏋️ PESO (What's weighing on me)
+## PESO
 """
     for t in pending:
         next_body += f"- [ ] {t}\n"
@@ -408,28 +408,14 @@ win_of_the_day:
         next_body += "- [ ] \n"
 
     next_body += """
----
-
-## ⚡ FOCO (What matters today)
+## FOCO
 - [ ] 
 
----
+## AW
 
-## 📊 AW (ActivityWatch)
-<!-- Populated by daily-roll -->
+## LLM
 
----
-
-## 🧠 LLM Analysis
-<!-- Populated by daily-roll -->
-
----
-
-## 🏆 Win of the Day
-
----
-
-## 📝 Notes
+## NOTAS
 
 """
     next_file.write_text(next_body, encoding="utf-8")
@@ -507,13 +493,18 @@ def cmd_sync(args, cfg, paths):
         content = update_frontmatter_field(content, f"aw_{cat}", val)
 
     cats = cfg.get("categories", {})
-    aw_block = "## AW\n\n**Total:** {0}h\n\n| Category | Time |\n|----------|------|\n".format(aw_data['total_hours'])
+    aw_lines = ["## AW", f"", f"Total: {aw_data['total_hours']}h", f""]
     for cat in cats:
         v = aw_data["metrics"].get(cat, 0)
         if v > 0:
             label = cats[cat].get("label", cat)
-            aw_block += f"| {label} | {v}h |\n"
-    aw_block += f"\n**Apps:** {', '.join([f'{a} ({t})' for a, t in aw_data['top_apps']])}\n"
+            emoji = cats[cat].get("emoji", "")
+            aw_lines.append(f"- {emoji} {label}: {v}h")
+    top = aw_data['top_apps']
+    if top:
+        aw_lines.append(f"")
+        aw_lines.append(f"Apps: {', '.join([f'{a} ({t})' for a, t in top])}")
+    aw_block = "\n".join(aw_lines) + "\n"
 
     if "## AW" in content:
         content = re.sub(r"## AW\n.*?(?=\n## |\Z)", aw_block, content, flags=re.DOTALL)
@@ -521,7 +512,7 @@ def cmd_sync(args, cfg, paths):
         content = content.rstrip() + "\n\n" + aw_block + "\n"
 
     current_file.write_text(content, encoding="utf-8")
-    print(f"   ✅ Updated: {aw_data['total_hours']}h")
+    print(f"   ✅ AW: {aw_data['total_hours']}h")
 
     if args.llm:
         print("   🧠 Generating LLM...")
