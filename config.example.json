@@ -3,8 +3,7 @@
   "aw_host": "http://localhost:5600",
   "min_seconds": 5,
   "all_day_folder": "0 - All Day",
-  "planner_folder": "7 - Planner",
-  "daily_notes_subfolder": "Daily Notes",
+  "archive_folder": "7 - Planner/Daily Notes",
   "metrics_file": "Metrics.md",
   "backlog_file": "Backlog.md",
   "categories": {

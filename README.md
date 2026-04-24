@@ -1,6 +1,6 @@
 # Obsidian ActivityWatch Sync
 
-Automate your daily productivity workflow in **Obsidian** by syncing time-tracking data from **ActivityWatch**, generating LLM-powered daily insights, and rolling over unfinished tasks — all without cluttering your vault.
+Automate your daily productivity workflow in **Obsidian** by syncing time-tracking data from **ActivityWatch**, generating LLM-powered daily insights, and rolling over unfinished tasks — all while keeping your workspace clean.
 
 ---
 
@@ -8,15 +8,15 @@ Automate your daily productivity workflow in **Obsidian** by syncing time-tracki
 
 Every day at **23:55** (or on demand), the script:
 
-1. **Reads** your current daily note from your "All Day" folder
+1. **Reads** your current daily note from `0 - All Day/`
 2. **Fetches** ActivityWatch data and categorizes time spent
 3. **Generates** an AI summary of your day (optional, via OpenRouter/Ollama)
-4. **Archives** the completed day to your planner's history
-5. **Updates** a rolling `Metrics.md` table with daily stats
-6. **Updates** a `Backlog.md` with any unchecked tasks
-7. **Creates** a clean note for tomorrow, carrying over pending tasks
+4. **Archives** the completed day to your history folder
+5. **Updates** `0 - All Day/Metrics.md` with daily stats
+6. **Updates** `0 - All Day/Backlog.md` with any unchecked tasks
+7. **Creates** a clean note for tomorrow in `0 - All Day/`
 
-The result: **your "All Day" folder always contains only today** — a clean desk every morning.
+The result: **open `0 - All Day/` and you have everything you need** — today's note, your backlog, and your metrics history.
 
 ---
 
@@ -24,17 +24,16 @@ The result: **your "All Day" folder always contains only today** — a clean des
 
 ```
 📂 Your Vault/
-├── 📂 0 - All Day/
-│   └── 2026-04-24.md          ← Only today lives here
+├── 📂 0 - All Day/              ← Your daily workspace (3 files only)
+│   ├── 2026-04-24.md           ← Today
+│   ├── Backlog.md              ← Pending tasks
+│   └── Metrics.md              ← Stats table
 │
-├── 📂 7 - Planner/
-│   ├── 📂 Daily Notes/
-│   │   └── 2026-04-23.md      ← Archived days
-│   ├── Metrics.md             ← Auto-updated stats table
-│   └── Backlog.md             ← Carried-over tasks
+└── 📂 7 - Planner/Daily Notes/  ← Archived history
+    └── 2026-04-23.md
 ```
 
-> Folder names (`0 - All Day`, `7 - Planner`, etc.) are fully configurable.
+> Folder names are fully configurable.
 
 ---
 
@@ -145,28 +144,55 @@ Enable AI-powered daily summaries:
 
 ## 📝 Daily Note Format
 
-The script expects a simple format:
+The script generates a practical but clean format:
 
 ```markdown
 ---
 date: 2026-04-24
+mood:
+energy:
+focus:
+win_of_the_day:
 ---
 
 # 2026-04-24
 
-## PESO
-- [ ] Something weighing on my mind
-- [x] Already done
+> 🎯 **Focus:**
 
-## FOCO
-- [ ] What actually matters today
+---
 
-## NOTES
-Anything goes here.
+## 🏋️ PESO (What's weighing on me)
+- [ ] Something consuming mental energy
+- [x] Already resolved
+
+---
+
+## ⚡ FOCO (What matters today)
+- [ ] The one thing that moves the needle
+
+---
+
+## 📊 AW (ActivityWatch)
+<!-- Populated by daily-roll -->
+
+---
+
+## 🧠 LLM Analysis
+<!-- Populated by daily-roll -->
+
+---
+
+## 🏆 Win of the Day
+
+---
+
+## 📝 Notes
 ```
 
-- `- [ ]` tasks carry over to tomorrow and the backlog
-- `- [x]` tasks are considered done and archived
+**Rules:**
+- `- [ ]` = pending (carries over to tomorrow + backlog)
+- `- [x]` = done (stays archived, doesn't carry over)
+- Fill `mood`, `energy`, `focus` (1-10) and `win_of_the_day` manually for richer metrics
 
 ---
 
@@ -211,8 +237,7 @@ In `config.json`:
 
 ```json
 "all_day_folder": "Inbox",
-"planner_folder": "Meta",
-"daily_notes_subfolder": "Archive",
+"archive_folder": "Archive/Daily",
 "metrics_file": "Stats.md",
 "backlog_file": "TODO.md"
 ```

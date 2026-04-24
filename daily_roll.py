@@ -7,7 +7,7 @@ Automatiza o fim do dia no Obsidian:
   2. Atualiza o arquivo do dia atual
   3. Gera análise LLM (se configurado)
   4. Arquiva o dia na pasta histórica
-  5. Atualiza métricas e backlog
+  5. Atualiza métricas e backlog (dentro de 0 - All Day)
   6. Cria arquivo limpo para o próximo dia
 
 Uso:
@@ -50,7 +50,7 @@ def discover_config_path(cli_path: str = None) -> Path:
     for c in candidates:
         if c.exists():
             return c
-    return candidates[0]  # default para criar depois
+    return candidates[0]
 
 
 def load_config(path: Path):
@@ -68,7 +68,6 @@ Crie o arquivo com:
     with open(path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
-    # Validações mínimas
     if not cfg.get("vault_path"):
         print("❌ Config 'vault_path' é obrigatório.")
         sys.exit(1)
@@ -77,22 +76,20 @@ Crie o arquivo com:
 
 
 # ───────────────────────────────────────────────
-# PATHS DO VAULT (configuráveis)
+# PATHS DO VAULT
 # ───────────────────────────────────────────────
 
 def resolve_vault_paths(cfg: dict):
     vault = Path(cfg["vault_path"]).expanduser().resolve()
-    all_day_name = cfg.get("all_day_folder", "0 - All Day")
-    planner_name = cfg.get("planner_folder", "7 - Planner")
-    daily_sub = cfg.get("daily_notes_subfolder", "Daily Notes")
+    all_day = vault / cfg.get("all_day_folder", "0 - All Day")
+    archive = vault / cfg.get("archive_folder", "7 - Planner/Daily Notes")
 
     return {
         "vault": vault,
-        "all_day": vault / all_day_name,
-        "planner": vault / planner_name,
-        "daily_notes": vault / planner_name / daily_sub,
-        "metrics": vault / planner_name / cfg.get("metrics_file", "Metrics.md"),
-        "backlog": vault / planner_name / cfg.get("backlog_file", "Backlog.md"),
+        "all_day": all_day,
+        "archive": archive,
+        "metrics": all_day / cfg.get("metrics_file", "Metrics.md"),
+        "backlog": all_day / cfg.get("backlog_file", "Backlog.md"),
     }
 
 
@@ -139,11 +136,14 @@ def format_duration(seconds: float) -> str:
 
 
 def find_current_day_file(all_day: Path) -> Path:
-    files = [f for f in all_day.iterdir() if f.suffix == ".md"]
+    """Retorna o único arquivo de data em 0 - All Day/. Ignora Backlog e Metrics."""
+    excluded = {"backlog.md", "metrics.md"}
+    files = [f for f in all_day.iterdir()
+             if f.suffix == ".md" and f.name.lower() not in excluded]
     if not files:
-        raise FileNotFoundError(f"Nenhum arquivo .md em {all_day}")
+        raise FileNotFoundError(f"Nenhum arquivo de dia encontrado em {all_day}")
     if len(files) > 1:
-        raise ValueError(f"Mais de um .md em {all_day}: {[f.name for f in files]}")
+        raise ValueError(f"Mais de um arquivo de dia em {all_day}: {[f.name for f in files]}")
     return files[0]
 
 
@@ -252,7 +252,7 @@ def llm_analyze(day_content: str, aw_data: dict, cfg: dict) -> str:
     system_prompt = llm_cfg.get("system_prompt",
         "You are a productivity assistant. Analyze the user's day briefly (3-4 sentences). "
         "What worked well, what to improve, and one insight. Be direct and encouraging. "
-        "Respond in the user's language (Portuguese if the content is in Portuguese)."
+        "Respond in the user's language."
     )
 
     user_prompt = f"""Tasks: {tasks_summary}
@@ -295,7 +295,7 @@ Day content:
 # ───────────────────────────────────────────────
 
 def update_metrics_file(target_date: date, fm: dict, aw: dict, paths: dict, cats: dict, llm_enabled: bool):
-    paths["daily_notes"].mkdir(parents=True, exist_ok=True)
+    paths["archive"].mkdir(parents=True, exist_ok=True)
 
     cells = [target_date.isoformat()]
     for field in ["mood", "energy", "focus"]:
@@ -315,7 +315,6 @@ def update_metrics_file(target_date: date, fm: dict, aw: dict, paths: dict, cats
     if marker in text:
         text = text.replace(marker, line + "\n" + marker)
     else:
-        # Inicializa arquivo se não existir
         headers = ["Date", "Mood", "Energy", "Focus"] + [c.title() for c in cat_order] + ["Total", "Win", "LLM"]
         header_line = "| " + " | ".join(headers) + " |"
         sep_line = "|" + "|".join([" --- " for _ in headers]) + "|"
@@ -352,7 +351,7 @@ def update_backlog_file(pending: list, paths: dict):
 
 
 def archive_and_create_next(current_file: Path, target_date: date, aw_data: dict, llm_text: str, paths: dict, cats: dict):
-    paths["daily_notes"].mkdir(parents=True, exist_ok=True)
+    paths["archive"].mkdir(parents=True, exist_ok=True)
 
     content = current_file.read_text(encoding="utf-8")
     fm, body = parse_frontmatter(content)
@@ -373,7 +372,7 @@ def archive_and_create_next(current_file: Path, target_date: date, aw_data: dict
     llm_section = f"\n\n## LLM\n\n{llm_text}\n"
     archived = content.rstrip() + aw_section + llm_section
 
-    archived_path = paths["daily_notes"] / f"{target_date.isoformat()}.md"
+    archived_path = paths["archive"] / f"{target_date.isoformat()}.md"
     archived_path.write_text(archived, encoding="utf-8")
     print(f"   📁 Archived: {archived_path.relative_to(paths['vault'])}")
 
@@ -383,11 +382,19 @@ def archive_and_create_next(current_file: Path, target_date: date, aw_data: dict
 
     next_body = f"""---
 date: {next_date.isoformat()}
+mood:
+energy:
+focus:
+win_of_the_day:
 ---
 
 # {next_date.isoformat()}
 
-## PESO
+> 🎯 **Focus:**
+
+---
+
+## 🏋️ PESO (What's weighing on me)
 """
     for t in pending:
         next_body += f"- [ ] {t}\n"
@@ -395,10 +402,28 @@ date: {next_date.isoformat()}
         next_body += "- [ ] \n"
 
     next_body += """
-## FOCO
+---
+
+## ⚡ FOCO (What matters today)
 - [ ] 
 
-## NOTES
+---
+
+## 📊 AW (ActivityWatch)
+<!-- Populated by daily-roll -->
+
+---
+
+## 🧠 LLM Analysis
+<!-- Populated by daily-roll -->
+
+---
+
+## 🏆 Win of the Day
+
+---
+
+## 📝 Notes
 
 """
     next_file.write_text(next_body, encoding="utf-8")
@@ -527,7 +552,7 @@ if __name__ == "__main__":
 
     # Garante que pastas existam
     paths["all_day"].mkdir(parents=True, exist_ok=True)
-    paths["planner"].mkdir(parents=True, exist_ok=True)
+    paths["archive"].mkdir(parents=True, exist_ok=True)
 
     if args.roll:
         cmd_roll(args, cfg, paths)
