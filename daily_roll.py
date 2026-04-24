@@ -245,53 +245,71 @@ def llm_analyze(day_content: str, aw_data: dict, cfg: dict) -> str:
     api_key = llm_cfg.get("api_key", "")
     model = llm_cfg.get("model", "gpt-3.5-turbo")
     base_url = llm_cfg.get("base_url", "https://api.openai.com/v1")
-
-    if not api_key:
-        return "LLM ativada mas sem API key."
+    is_ollama_local = "localhost:11434" in base_url
+    is_ollama_cloud = "ollama.com" in base_url and not is_ollama_local
+    is_ollama = is_ollama_local or is_ollama_cloud
 
     pending, done = extract_tasks(day_content)
-    tasks_summary = f"Done: {len(done)}. Pending: {len(pending)}."
+    tasks_summary = f"Feitas: {len(done)}. Pendentes: {len(pending)}."
 
     aw_summary = f"Total: {aw_data['total_hours']}h. "
     aw_summary += ", ".join([f"{k}: {v}h" for k, v in aw_data["metrics"].items() if v > 0])
 
     system_prompt = llm_cfg.get("system_prompt",
-        "You are a productivity assistant. Analyze the user's day briefly (3-4 sentences). "
-        "What worked well, what to improve, and one insight. Be direct and encouraging. "
-        "Respond in the user's language."
+        "Voce e um assistente de produtividade. Analise o dia do usuario em 2-3 frases curtas. "
+        "O que funcionou, o que melhorar, um insight. Responda SEMPRE em portugues do Brasil."
     )
 
-    user_prompt = f"""Tasks: {tasks_summary}
+    user_prompt = f"""Tarefas: {tasks_summary}
 ActivityWatch: {aw_summary}
-Day content:
+Conteudo do dia:
 {day_content[:2000]}
 """
 
     try:
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
+        headers = {"Content-Type": "application/json"}
+        if api_key and not is_ollama_local:
+            headers["Authorization"] = f"Bearer {api_key}"
         if "openrouter" in base_url:
             headers["HTTP-Referer"] = "https://github.com"
             headers["X-Title"] = "obsidian-activitywatch-sync"
 
-        r = requests.post(
-            f"{base_url}/chat/completions",
-            headers=headers,
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 350
-            },
-            timeout=60
-        )
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
+        if is_ollama:
+            # Ollama native API format
+            r = requests.post(
+                f"{base_url}/api/chat",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "stream": False
+                },
+                timeout=120
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data["message"]["content"].strip()
+        else:
+            # OpenAI-compatible format
+            r = requests.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 350
+                },
+                timeout=60
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
         return f"LLM error: {e}"
 
