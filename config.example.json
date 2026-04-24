@@ -1,0 +1,40 @@
+{
+  "vault_path": "/home/YOUR_USER/path/to/your/obsidian-vault",
+  "aw_host": "http://localhost:5600",
+  "min_seconds": 5,
+  "all_day_folder": "0 - All Day",
+  "planner_folder": "7 - Planner",
+  "daily_notes_subfolder": "Daily Notes",
+  "metrics_file": "Metrics.md",
+  "backlog_file": "Backlog.md",
+  "categories": {
+    "work": {
+      "emoji": "💼",
+      "label": "Work",
+      "keywords": ["slack", "jira", "vscode", "github.com/mycompany"]
+    },
+    "study": {
+      "emoji": "📚",
+      "label": "Study",
+      "keywords": ["coursera", "udemy", "overleaf", "zotero"]
+    },
+    "personal": {
+      "emoji": "🏠",
+      "label": "Personal",
+      "keywords": ["obsidian", "notion", "spotify", "kindle"]
+    },
+    "distraction": {
+      "emoji": "😵",
+      "label": "Distraction",
+      "keywords": ["instagram", "twitter", "x.com", "reddit", "tiktok", "netflix", "twitch"]
+    }
+  },
+  "llm": {
+    "enabled": false,
+    "provider": "openrouter",
+    "api_key": "",
+    "model": "anthropic/claude-3.5-haiku",
+    "base_url": "https://openrouter.ai/api/v1",
+    "system_prompt": "You are a productivity assistant. Analyze the user's day briefly (3-4 sentences). What worked well, what to improve, and one insight. Be direct and encouraging. Respond in the user's language."
+  }
+}
