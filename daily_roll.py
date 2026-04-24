@@ -192,7 +192,13 @@ def sync_activitywatch(target_date: date, cfg: dict):
     end = start + timedelta(days=1)
     start_iso, end_iso = start.isoformat(), end.isoformat()
 
-    relevant = [b for b in buckets if b.get("type", "").startswith(("app.", "web.", "currentwindow"))]
+    # ActivityWatch returns buckets as a dict {id: metadata}
+    if isinstance(buckets, dict):
+        bucket_list = [{"id": k, **v} for k, v in buckets.items()]
+    else:
+        bucket_list = buckets
+
+    relevant = [b for b in bucket_list if b.get("type", "").startswith(("app.", "web.", "currentwindow"))]
     all_events = []
     for b in relevant:
         all_events.extend(aw_get_events(host, b["id"], start_iso, end_iso))
