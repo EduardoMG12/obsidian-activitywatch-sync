@@ -30,10 +30,10 @@
   },
   "llm": {
     "enabled": false,
-    "provider": "openrouter",
+    "provider": "ollama-cloud",
     "api_key": "",
-    "model": "anthropic/claude-3.5-haiku",
-    "base_url": "https://openrouter.ai/api/v1",
-    "system_prompt": "You are a productivity assistant. Analyze the user's day briefly (3-4 sentences). What worked well, what to improve, and one insight. Be direct and encouraging. Respond in the user's language."
+    "model": "gemma3:4b",
+    "base_url": "https://ollama.com",
+    "system_prompt": "Voce e um assistente de produtividade. Analise o dia do usuario em 2-3 frases curtas. O que funcionou, o que melhorar, um insight. Responda em portugues."
   }
 }
