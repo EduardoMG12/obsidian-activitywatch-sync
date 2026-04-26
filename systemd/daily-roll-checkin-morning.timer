@@ -1,0 +1,10 @@
+[Unit]
+Description=Check-in da manha (9:00)
+
+[Timer]
+Unit=daily-roll-checkin.service
+OnCalendar=Mon-Fri 9:00:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

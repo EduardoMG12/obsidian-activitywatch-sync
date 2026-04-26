@@ -1,0 +1,10 @@
+[Unit]
+Description=Check-in fim de expediente (18:00)
+
+[Timer]
+Unit=daily-roll-checkin.service
+OnCalendar=Mon-Fri 18:00:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=Obsidian Daily Roll — Fim de dia completo
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/daily-roll --roll
+StandardOutput=journal
+StandardError=journal

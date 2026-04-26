@@ -5,6 +5,7 @@ set -e
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/obsidian-activitywatch-sync"
 BIN_DIR="$HOME/.local/bin"
+SYSTEMD_USER="$HOME/.config/systemd/user"
 
 echo "🚀 Setting up obsidian-activitywatch-sync..."
 
@@ -39,23 +40,35 @@ else
     echo "   ℹ️  Config already exists at $CONFIG_DIR/config.json"
 fi
 
-# 6. Cron job (optional)
-read -p "   ⏰ Add cron job for 23:55 daily? [y/N] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    CRON_LINE="55 23 * * * $HOME/.local/bin/daily-roll --roll >> /tmp/daily-roll.log 2>&1"
-    (crontab -l 2>/dev/null | grep -v "daily-roll" || true) > /tmp/crontab_tmp
-    if ! grep -q "daily-roll" /tmp/crontab_tmp 2>/dev/null; then
-        echo "$CRON_LINE" >> /tmp/crontab_tmp
-        crontab /tmp/crontab_tmp
-        echo "   ✅ Cron added (23:55 daily)"
-    else
-        echo "   ℹ️  Cron already exists"
-    fi
-    rm -f /tmp/crontab_tmp
-fi
+# 6. Systemd timers
+mkdir -p "$SYSTEMD_USER"
+cp "$REPO_DIR/systemd/"*.service "$REPO_DIR/systemd/"*.timer "$SYSTEMD_USER/" 2>/dev/null || true
+systemctl --user daemon-reload
 
-# 7. Test ActivityWatch
+# Enable all timers
+systemctl --user enable daily-roll-checkin-morning.timer 2>/dev/null || true
+systemctl --user enable daily-roll-checkin-lunch.timer 2>/dev/null || true
+systemctl --user enable daily-roll-checkin-evening.timer 2>/dev/null || true
+systemctl --user enable daily-roll.timer 2>/dev/null || true
+
+# Start all timers
+systemctl --user start daily-roll-checkin-morning.timer 2>/dev/null || true
+systemctl --user start daily-roll-checkin-lunch.timer 2>/dev/null || true
+systemctl --user start daily-roll-checkin-evening.timer 2>/dev/null || true
+systemctl --user start daily-roll.timer 2>/dev/null || true
+
+echo ""
+echo "   ⏰ Systemd timers activated:"
+echo "      • 9:00  (Mon-Fri) — Check-in da manha"
+echo "      • 12:00 (Mon-Fri) — Check-in do meio-dia"
+echo "      • 18:00 (Mon-Fri) — Check-in fim de expediente"
+echo "      • 23:55 (Daily)   — Rollover completo"
+
+# 7. Remove old cron if exists
+(crontab -l 2>/dev/null | grep -v "daily-roll" || true) | crontab - 2>/dev/null || true
+
+# 8. Test ActivityWatch
+echo ""
 echo "   📡 Testing ActivityWatch..."
 if curl -s http://localhost:5600/api/0/buckets/ > /dev/null 2>&1; then
     echo "   ✅ ActivityWatch is online"
@@ -68,6 +81,9 @@ echo "🎉 Setup complete!"
 echo ""
 echo "Next steps:"
 echo "   1. Edit: $CONFIG_DIR/config.json"
-echo "   2. Run:  daily-roll --sync"
-echo "   3. Run:  daily-roll --roll  (end-of-day full rollover)"
+echo "   2. Run:  daily-roll --sync     (sync now)"
+echo "   3. Run:  daily-roll --checkin  (light check-in)"
+echo "   4. Run:  daily-roll --roll     (end-of-day full rollover)"
 echo ""
+echo "View timers:  systemctl --user list-timers"
+echo "View logs:    journalctl --user -u daily-roll.service -f"

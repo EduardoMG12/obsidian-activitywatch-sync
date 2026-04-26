@@ -1,0 +1,8 @@
+[Unit]
+Description=Obsidian Daily Roll — Check-in leve
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/daily-roll --checkin
+StandardOutput=journal
+StandardError=journal
