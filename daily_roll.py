@@ -288,13 +288,50 @@ def sync_activitywatch(target_date: date, cfg: dict):
 
 
 # ───────────────────────────────────────────────
-# LLM
+# LLM — ANALISE INTELIGENTE DE PRODUTIVIDADE
 # ───────────────────────────────────────────────
 
-def llm_analyze(day_content: str, aw_data: dict, cfg: dict) -> str:
+def get_recent_history(paths: dict, days: int = 3) -> str:
+    """Le os ultimos N arquivos arquivados para dar contexto de tendencia."""
+    archive = paths["archive"]
+    if not archive.exists():
+        return ""
+    files = sorted([f for f in archive.iterdir() if f.suffix == ".md"], reverse=True)
+    context = []
+    for f in files[:days]:
+        try:
+            text = f.read_text(encoding="utf-8")
+            fm, body = parse_frontmatter(text)
+            date = f.stem
+            # Extrai apenas tasks feitas e LLM
+            done = re.findall(r"^\s*- \[x\] (.*)$", body, re.MULTILINE)
+            llm_match = re.search(r"## LLM\n\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
+            llm_bit = llm_match.group(1).strip()[:100] if llm_match else ""
+            summary = f"- {date}: {len(done)} tasks feitas"
+            if llm_bit:
+                summary += f" | {llm_bit}"
+            context.append(summary)
+        except Exception:
+            continue
+    return "\n".join(context) if context else ""
+
+
+def get_metrics_summary(paths: dict) -> str:
+    """Le as ultimas 5 linhas do Metrics.md para contexto numerico."""
+    metrics = paths["metrics"]
+    if not metrics.exists():
+        return ""
+    lines = metrics.read_text(encoding="utf-8").strip().split("\n")
+    # Pula header e separator
+    data_lines = [l for l in lines if l.startswith("| 2")]
+    return "\n".join(data_lines[-5:]) if data_lines else ""
+
+
+def llm_analyze(day_content: str, aw_data: dict, cfg: dict, paths: dict = None) -> str:
     llm_cfg = cfg.get("llm", {})
-    if not llm_cfg.get("enabled"):
-        return "LLM desativada."
+    # Agora a LLM roda SEMPRE, a menos que explicitamente desativada
+    if llm_cfg.get("enabled") is False:
+        return "LLM desativada pelo usuario."
 
     api_key = llm_cfg.get("api_key", "")
     model = llm_cfg.get("model", "gpt-3.5-turbo")
@@ -303,22 +340,70 @@ def llm_analyze(day_content: str, aw_data: dict, cfg: dict) -> str:
     is_ollama_cloud = "ollama.com" in base_url and not is_ollama_local
     is_ollama = is_ollama_local or is_ollama_cloud
 
+    # Contexto do dia
+    today = datetime.now().strftime("%A, %d/%m/%Y")
+    dias_pt = {
+        "Monday": "Segunda-feira", "Tuesday": "Terça-feira", "Wednesday": "Quarta-feira",
+        "Thursday": "Quinta-feira", "Friday": "Sexta-feira", "Saturday": "Sábado", "Sunday": "Domingo"
+    }
+    dia_semana = dias_pt.get(datetime.now().strftime("%A"), datetime.now().strftime("%A"))
+
     pending, done = extract_tasks(day_content)
     tasks_summary = f"Feitas: {len(done)}. Pendentes: {len(pending)}."
 
-    aw_summary = f"Total: {aw_data['total_hours']}h. "
-    aw_summary += ", ".join([f"{k}: {v}h" for k, v in aw_data["metrics"].items() if v > 0])
+    # O que estava planejado no PESO
+    peso = extract_section(day_content, "PESO")
+    peso_lines = [l.strip() for l in peso.split("\n") if l.strip().startswith("- [ ]") or l.strip().startswith("- [x]")]
+    planned = "\n".join(peso_lines[:15]) if peso_lines else "Nenhum item estruturado no PESO."
 
-    system_prompt = llm_cfg.get("system_prompt",
-        "Voce e um assistente de produtividade. Analise o dia do usuario em 2-3 frases curtas. "
-        "O que funcionou, o que melhorar, um insight. Responda SEMPRE em portugues do Brasil."
+    # Dados do ActivityWatch
+    aw_summary = f"Total: {aw_data['total_hours']}h"
+    for cat, meta in cfg.get("categories", {}).items():
+        v = aw_data.get("metrics", {}).get(cat, 0)
+        if v > 0:
+            aw_summary += f"\n- {meta.get('emoji', '')} {meta.get('label', cat)}: {v}h"
+
+    # Historico recente
+    history = get_recent_history(paths, days=3) if paths else ""
+    metrics = get_metrics_summary(paths) if paths else ""
+
+    system_prompt = (
+        "Voce e um coach de produtividade e crescimento pessoal. "
+        "Analise o dia do usuario de forma estrategica, como um mentor que acompanha sua evolucao. "
+        "Responda SEMPRE em portugues do Brasil. Seja direto, mas encorajador."
     )
 
-    user_prompt = f"""Tarefas: {tasks_summary}
-ActivityWatch: {aw_summary}
-Conteudo do dia:
-{day_content[:2000]}
-"""
+    user_prompt = f"""HOJE: {dia_semana} ({today})
+
+RESUMO DE TAREFAS:
+{tasks_summary}
+
+PLANEJADO NO PESO:
+{planned}
+
+DADOS DE TEMPO (ActivityWatch):
+{aw_summary}
+
+HISTORICO RECENTE:
+{history if history else "Sem historico disponivel."}
+
+METRICAS RECENTES:
+{metrics if metrics else "Sem metricas disponiveis."}
+
+CONTEUDO DO DIA (parcial):
+{day_content[:1500]}
+
+---
+INSTRUCOES DE ANALISE:
+1. DIA DA SEMANA: comente brevemente o dia (ex: "segunda produtiva", "sexta cansativa").
+2. PROGRESSAO: O que avancou hoje? O que foi concluido do PESO?
+3. REGRESSAO: O que ficou para tras? O que tomou tempo sem gerar valor?
+4. FOCO: O tempo foi gasto no que importa? Compare planejado vs real.
+5. HABITOS: Ha padroes repetidos (bom ou ruim)?
+6. CRESCIMENTO: Qual aprendizado ou evolucao de hoje?
+7. PROXIMA ACAO: Uma sugestao pratica e especifica para amanha.
+
+Responda em 4-6 frases curtas e diretas. Seja realista, nao so elogioso."""
 
     try:
         headers = {"Content-Type": "application/json"}
@@ -329,7 +414,6 @@ Conteudo do dia:
             headers["X-Title"] = "obsidian-activitywatch-sync"
 
         if is_ollama:
-            # Ollama native API format
             r = requests.post(
                 f"{base_url}/api/chat",
                 headers=headers,
@@ -344,10 +428,8 @@ Conteudo do dia:
                 timeout=120
             )
             r.raise_for_status()
-            data = r.json()
-            return data["message"]["content"].strip()
+            return r.json()["message"]["content"].strip()
         else:
-            # OpenAI-compatible format
             r = requests.post(
                 f"{base_url}/chat/completions",
                 headers=headers,
@@ -358,7 +440,7 @@ Conteudo do dia:
                         {"role": "user", "content": user_prompt}
                     ],
                     "temperature": 0.7,
-                    "max_tokens": 350
+                    "max_tokens": 500
                 },
                 timeout=60
             )
@@ -597,13 +679,21 @@ def cmd_roll(args, cfg, paths):
     else:
         print("   ⚠️  No ActivityWatch data")
 
+    # LLM: agora roda SEMPRE por padrao (a menos que enabled seja explicitamente false)
+    llm_cfg = cfg.get("llm", {})
+    llm_explicitly_disabled = llm_cfg.get("enabled") is False
     llm_text = ""
-    if args.llm or cfg.get("llm", {}).get("enabled"):
+    if not llm_explicitly_disabled:
         print("   🧠 Generating LLM analysis...")
-        llm_text = llm_analyze(content, aw_data or {"metrics": {}, "total_hours": 0}, cfg)
+        llm_text = llm_analyze(
+            content,
+            aw_data or {"metrics": {}, "total_hours": 0},
+            cfg,
+            paths=paths
+        )
         print(f"   ✅ {llm_text[:80]}...")
     else:
-        llm_text = "LLM disabled."
+        llm_text = "LLM desativada pelo usuario."
 
     if aw_data:
         content = update_frontmatter_field(content, "aw_total", aw_data["total_hours"])
@@ -612,7 +702,7 @@ def cmd_roll(args, cfg, paths):
     current_file.write_text(content, encoding="utf-8")
 
     pending = archive_and_create_next(current_file, target_date, aw_data, llm_text, paths, cfg.get("categories", {}))
-    update_metrics_file(target_date, fm, aw_data, paths, cfg.get("categories", {}), cfg.get("llm", {}).get("enabled", False))
+    update_metrics_file(target_date, fm, aw_data, paths, cfg.get("categories", {}), not llm_explicitly_disabled)
     update_backlog_file(pending, paths)
 
     print("\n✨ Done!")
@@ -669,9 +759,12 @@ def cmd_sync(args, cfg, paths):
     current_file.write_text(content, encoding="utf-8")
     print(f"   ✅ AW: {aw_data['total_hours']}h")
 
-    if args.llm:
+    # LLM: roda SEMPRE no sync tambem (a menos que explicitamente desativada)
+    llm_cfg = cfg.get("llm", {})
+    llm_explicitly_disabled = llm_cfg.get("enabled") is False
+    if not llm_explicitly_disabled:
         print("   🧠 Generating LLM...")
-        text = llm_analyze(content, aw_data, cfg)
+        text = llm_analyze(content, aw_data, cfg, paths=paths)
         print(f"   📝 {text[:200]}...")
         llm_block = f"## LLM\n\n{text}"
         if "<summary>🤖 Análise LLM</summary>" in content:
