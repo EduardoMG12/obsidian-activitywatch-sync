@@ -145,8 +145,8 @@ def format_duration(seconds: float) -> str:
 
 
 def find_current_day_file(all_day: Path) -> Path:
-    """Retorna o único arquivo de data em 0 - All Day/. Ignora Backlog e Metrics."""
-    excluded = {"backlog.md", "metrics.md"}
+    """Retorna o único arquivo de data em 0 - All Day/. Ignora arquivos fixos."""
+    excluded = {"backlog.md", "metrics.md", "cursos.md"}
     files = [f for f in all_day.iterdir()
              if f.suffix == ".md" and f.name.lower() not in excluded]
     if not files:
@@ -450,6 +450,120 @@ Responda em 4-6 frases curtas e diretas. Seja realista, nao so elogioso."""
         return f"LLM error: {e}"
 
 
+def llm_checkin(day_content: str, aw_data: dict, cfg: dict) -> str:
+    """Analise leve para check-ins intermediarios ao longo do dia."""
+    llm_cfg = cfg.get("llm", {})
+    if llm_cfg.get("enabled") is False:
+        return "LLM desativada."
+
+    api_key = llm_cfg.get("api_key", "")
+    model = llm_cfg.get("model", "gpt-3.5-turbo")
+    base_url = llm_cfg.get("base_url", "https://api.openai.com/v1")
+    is_ollama_local = "localhost:11434" in base_url
+    is_ollama_cloud = "ollama.com" in base_url and not is_ollama_local
+    is_ollama = is_ollama_local or is_ollama_cloud
+
+    # Determina o momento do dia
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        momento = "manha"
+        momento_label = "da manha"
+    elif 12 <= hour < 14:
+        momento = "meio-dia"
+        momento_label = "do meio-dia"
+    elif 14 <= hour < 18:
+        momento = "tarde"
+        momento_label = "da tarde"
+    elif 18 <= hour < 22:
+        momento = "noite"
+        momento_label = "da noite"
+    else:
+        momento = "madrugada"
+        momento_label = "da madrugada"
+
+    pending, done = extract_tasks(day_content)
+    tasks_summary = f"Feitas: {len(done)}. Pendentes: {len(pending)}."
+
+    # PESO parcial
+    peso = extract_section(day_content, "PESO")
+    peso_lines = [l.strip() for l in peso.split("\n") if l.strip().startswith("- [ ]") or l.strip().startswith("- [x]")]
+    planned = "\n".join(peso_lines[:10]) if peso_lines else "Nenhum item no PESO."
+
+    # AW parcial
+    aw_summary = f"Total hoje: {aw_data.get('total_hours', 0)}h"
+    for cat, meta in cfg.get("categories", {}).items():
+        v = aw_data.get("metrics", {}).get(cat, 0)
+        if v > 0:
+            aw_summary += f"\n- {meta.get('emoji', '')} {meta.get('label', cat)}: {v}h"
+
+    system_prompt = (
+        "Voce e um coach de produtividade. "
+        "Faca um check-in rapido e direto. Responda SEMPRE em portugues do Brasil. "
+        "Maximo 2-3 frases curtas."
+    )
+
+    user_prompt = f"""CHECK-IN {momento_label.upper()}
+
+TAREFAS: {tasks_summary}
+
+PESO:
+{planned}
+
+TEMPO HOJE:
+{aw_summary}
+
+INSTRUCOES:
+1. Comente brevemente como esta indo o dia ate agora.
+2. Destaque 1 coisa que esta funcionando e 1 que precisa de atencao.
+3. De uma sugestao rapida e pratica para o proximo bloco da rotina.
+
+Responda em 2-3 frases curtas. Seja realista."""
+
+    try:
+        headers = {"Content-Type": "application/json"}
+        if api_key and not is_ollama_local:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if "openrouter" in base_url:
+            headers["HTTP-Referer"] = "https://github.com"
+            headers["X-Title"] = "obsidian-activitywatch-sync"
+
+        if is_ollama:
+            r = requests.post(
+                f"{base_url}/api/chat",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "stream": False
+                },
+                timeout=120
+            )
+            r.raise_for_status()
+            return r.json()["message"]["content"].strip()
+        else:
+            r = requests.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 250
+                },
+                timeout=60
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"LLM error: {e}"
+
+
 # ───────────────────────────────────────────────
 # ROLLOVER
 # ───────────────────────────────────────────────
@@ -708,6 +822,79 @@ def cmd_roll(args, cfg, paths):
     print("\n✨ Done!")
 
 
+def cmd_checkin(args, cfg, paths):
+    """Check-in leve ao longo do dia (sync + analise rapida)."""
+    current_file = find_current_day_file(paths["all_day"])
+    print(f"\n📍 Check-in: {current_file.name}")
+
+    try:
+        target_date = date.fromisoformat(current_file.stem)
+    except ValueError:
+        print("❌ Invalid filename")
+        sys.exit(1)
+
+    content = current_file.read_text(encoding="utf-8")
+    aw_data = sync_activitywatch(target_date, cfg)
+
+    if not aw_data:
+        print("   ⚠️ No ActivityWatch data")
+        return
+
+    content = update_frontmatter_field(content, "aw_total", aw_data["total_hours"])
+    for cat, val in aw_data["metrics"].items():
+        content = update_frontmatter_field(content, f"aw_{cat}", val)
+
+    cats = cfg.get("categories", {})
+    aw_lines = ["## AW", f"", f"Total: {aw_data['total_hours']}h", f""]
+    for cat in cats:
+        v = aw_data["metrics"].get(cat, 0)
+        if v > 0:
+            label = cats[cat].get("label", cat)
+            emoji = cats[cat].get("emoji", "")
+            aw_lines.append(f"- {emoji} {label}: {v}h")
+    top = aw_data['top_apps']
+    if top:
+        aw_lines.append(f"")
+        aw_lines.append(f"Apps: {', '.join([f'{a} ({t})' for a, t in top])}")
+    aw_block = "\n".join(aw_lines)
+
+    if "<summary>📊 ActivityWatch</summary>" in content:
+        content = re.sub(
+            r'(<details>\s*<summary>📊 ActivityWatch</summary>\s*).*?(\s*</details>)',
+            r'\1\n' + aw_block + r'\n\2',
+            content,
+            flags=re.DOTALL
+        )
+    elif "## AW" in content:
+        content = re.sub(r"## AW\n.*?(?=\n## |\Z)", aw_block + "\n", content, flags=re.DOTALL)
+    else:
+        content = content.rstrip() + "\n\n" + aw_block + "\n"
+
+    current_file.write_text(content, encoding="utf-8")
+    print(f"   ✅ AW: {aw_data['total_hours']}h")
+
+    # Check-in LLM (prompt leve)
+    llm_cfg = cfg.get("llm", {})
+    llm_explicitly_disabled = llm_cfg.get("enabled") is False
+    if not llm_explicitly_disabled:
+        print("   🧠 Generating check-in...")
+        text = llm_checkin(content, aw_data, cfg)
+        print(f"   📝 {text[:200]}...")
+        llm_block = f"## LLM\n\n{text}"
+        if "<summary>🤖 Análise LLM</summary>" in content:
+            content = re.sub(
+                r'(<details>\s*<summary>🤖 Análise LLM</summary>\s*).*?(\s*</details>)',
+                r'\1\n' + llm_block + r'\n\2',
+                content,
+                flags=re.DOTALL
+            )
+        elif "## LLM" in content:
+            content = re.sub(r"## LLM\n.*?(?=\n## |\Z)", llm_block + "\n", content, flags=re.DOTALL)
+        else:
+            content = content.rstrip() + "\n\n" + llm_block + "\n"
+        current_file.write_text(content, encoding="utf-8")
+
+
 def cmd_sync(args, cfg, paths):
     current_file = find_current_day_file(paths["all_day"])
     print(f"\n🔄 Sync AW: {current_file.name}")
@@ -788,7 +975,8 @@ def cmd_sync(args, cfg, paths):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Obsidian + ActivityWatch Daily Sync")
     parser.add_argument("--roll", action="store_true", help="End-of-day rollover")
-    parser.add_argument("--sync", action="store_true", help="Only sync ActivityWatch now")
+    parser.add_argument("--sync", action="store_true", help="Sync AW + full LLM analysis")
+    parser.add_argument("--checkin", action="store_true", help="Light check-in (sync + quick LLM)")
     parser.add_argument("--llm", action="store_true", help="Force LLM analysis")
     parser.add_argument("--config", type=str, default=None, help="Path to config.json")
     parser.add_argument("--vault", type=str, default=None, help="Override vault path")
@@ -808,6 +996,8 @@ if __name__ == "__main__":
 
     if args.roll:
         cmd_roll(args, cfg, paths)
+    elif args.checkin:
+        cmd_checkin(args, cfg, paths)
     elif args.sync:
         cmd_sync(args, cfg, paths)
     else:
@@ -816,5 +1006,5 @@ if __name__ == "__main__":
             print("🌙 Night time detected. Running rollover...")
             cmd_roll(args, cfg, paths)
         else:
-            print("🔄 Use --roll or --sync.\n")
+            print("🔄 Use --roll, --checkin or --sync.\n")
             parser.print_help()
