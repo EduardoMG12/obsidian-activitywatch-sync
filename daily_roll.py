@@ -129,6 +129,15 @@ def extract_tasks(text: str):
     return pending, done
 
 
+def extract_section(text: str, heading: str) -> str:
+    """Extrai o conteúdo bruto de uma seção markdown (## heading)."""
+    pattern = rf"(?:^|\n)## {re.escape(heading)}\n(.*?)((?=\n## )|\Z)"
+    m = re.search(pattern, text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
 def format_duration(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
@@ -185,6 +194,7 @@ def classify_event(title: str, app: str, url: str, cats: dict) -> str:
 def sync_activitywatch(target_date: date, cfg: dict):
     host = cfg.get("aw_host", "http://localhost:5600")
     min_sec = cfg.get("min_seconds", 5)
+    max_dur = cfg.get("max_event_duration_seconds", 7200)  # 2h default, idle filter
     cats = cfg.get("categories", {})
 
     buckets = aw_get_buckets(host)
@@ -192,31 +202,74 @@ def sync_activitywatch(target_date: date, cfg: dict):
     end = start + timedelta(days=1)
     start_iso, end_iso = start.isoformat(), end.isoformat()
 
-    # ActivityWatch returns buckets as a dict {id: metadata}
     if isinstance(buckets, dict):
         bucket_list = [{"id": k, **v} for k, v in buckets.items()]
     else:
         bucket_list = buckets
 
-    relevant = [b for b in bucket_list if b.get("type", "").startswith(("app.", "web.", "currentwindow"))]
-    all_events = []
-    for b in relevant:
-        all_events.extend(aw_get_events(host, b["id"], start_iso, end_iso))
+    # Separate primary (window) and secondary (web) buckets to avoid double-counting time
+    primary_buckets = [b for b in bucket_list if b.get("type", "").startswith("currentwindow")]
+    web_buckets = [b for b in bucket_list if b.get("type", "").startswith("web.")]
 
-    if not all_events:
+    # Fetch primary events (these define the actual time spent)
+    primary_events = []
+    for b in primary_buckets:
+        primary_events.extend(aw_get_events(host, b["id"], start_iso, end_iso))
+
+    if not primary_events:
         return None
+
+    # Fetch web events to enrich URLs for better categorization
+    web_events = []
+    for b in web_buckets:
+        web_events.extend(aw_get_events(host, b["id"], start_iso, end_iso))
+
+    # Build a lookup: for each web event, map its time range to its URL
+    # We'll match by timestamp overlap for enrichment
+    web_by_time = []
+    for ev in web_events:
+        ts = ev.get("timestamp", "")
+        dur = ev.get("duration", 0)
+        url = ev.get("data", {}).get("url", "")
+        if url and ts:
+            web_by_time.append({"ts": ts, "dur": dur, "url": url})
+
+    def find_url_for_event(ev):
+        """Find a matching web URL for a window event based on timestamp proximity."""
+        ev_ts = ev.get("timestamp", "")
+        if not ev_ts:
+            return ""
+        # Simple heuristic: find web event with closest timestamp
+        best_url = ""
+        best_diff = float("inf")
+        for w in web_by_time:
+            # naive string compare; for production use datetime parsing
+            diff = abs((datetime.fromisoformat(ev_ts.replace("Z", "+00:00")) -
+                       datetime.fromisoformat(w["ts"].replace("Z", "+00:00"))).total_seconds())
+            if diff < best_diff and diff < 10:  # within 10 seconds
+                best_diff = diff
+                best_url = w["url"]
+        return best_url
 
     categories = defaultdict(float)
     app_times = defaultdict(float)
 
-    for ev in all_events:
+    for ev in primary_events:
         dur = ev.get("duration", 0)
         if dur < min_sec:
             continue
+        if dur > max_dur:
+            # Cap overly long events (likely idle/away)
+            dur = max_dur
         d = ev.get("data", {})
-        cat = classify_event(d.get("title", ""), d.get("app", ""), d.get("url", ""), cats)
+        title = d.get("title", "")
+        app = d.get("app", "")
+        url = d.get("url", "")
+        if not url:
+            url = find_url_for_event(ev)
+        cat = classify_event(title, app, url, cats)
         categories[cat] += dur
-        app_times[d.get("app", d.get("title", "?"))[:40]] += dur
+        app_times[app or title or "?"] += dur
 
     metrics = {cat: round(sec / 3600, 2) for cat, sec in categories.items()}
     for c in list(cats.keys()) + ["uncategorized"]:
@@ -229,7 +282,8 @@ def sync_activitywatch(target_date: date, cfg: dict):
         "metrics": metrics,
         "total_hours": round(total, 2),
         "top_apps": [(a, format_duration(s)) for a, s in top_apps],
-        "raw_events": len(all_events)
+        "raw_events": len(primary_events),
+        "web_enriched": len([u for u in web_by_time if u["url"]])
     }
 
 
@@ -380,7 +434,8 @@ def archive_and_create_next(current_file: Path, target_date: date, aw_data: dict
     content = current_file.read_text(encoding="utf-8")
     fm, body = parse_frontmatter(content)
 
-    aw_lines = ["", "## AW", ""]
+    # Monta seção AW
+    aw_lines = ["## AW", ""]
     if aw_data:
         aw_lines.append(f"Total: {aw_data['total_hours']}h")
         aw_lines.append("")
@@ -396,10 +451,31 @@ def archive_and_create_next(current_file: Path, target_date: date, aw_data: dict
             aw_lines.append(f"Apps: {', '.join([f'{a} ({t})' for a, t in top])}")
     else:
         aw_lines.append("ActivityWatch offline.")
-    aw_section = "\n".join(aw_lines) + "\n"
+    aw_section = "\n".join(aw_lines)
 
-    llm_section = f"\n\n## LLM\n\n{llm_text}\n"
-    archived = content.rstrip() + aw_section + llm_section
+    # Monta seção LLM
+    llm_section = f"## LLM\n\n{llm_text}"
+
+    # Se o arquivo já usa o template com <details>, insere dentro dos blocos
+    if "<summary>📊 ActivityWatch</summary>" in content:
+        archived = re.sub(
+            r'(<details>\s*<summary>📊 ActivityWatch</summary>\s*).*?(\s*</details>)',
+            r'\1\n' + aw_section + r'\n\2',
+            content,
+            flags=re.DOTALL
+        )
+    else:
+        archived = content.rstrip() + "\n\n" + aw_section + "\n"
+
+    if "<summary>🤖 Análise LLM</summary>" in archived:
+        archived = re.sub(
+            r'(<details>\s*<summary>🤖 Análise LLM</summary>\s*).*?(\s*</details>)',
+            r'\1\n' + llm_section + r'\n\2',
+            archived,
+            flags=re.DOTALL
+        )
+    else:
+        archived = archived.rstrip() + "\n\n" + llm_section + "\n"
 
     archived_path = paths["archive"] / f"{target_date.isoformat()}.md"
     archived_path.write_text(archived, encoding="utf-8")
@@ -408,6 +484,17 @@ def archive_and_create_next(current_file: Path, target_date: date, aw_data: dict
     pending, _ = extract_tasks(content)
     next_date = target_date + timedelta(days=1)
     next_file = paths["all_day"] / f"{next_date.isoformat()}.md"
+
+    # Extrai seções preservando subcategorias e estrutura
+    peso_content = extract_section(body, "PESO")
+    peso_lines = peso_content.split('\n')
+    peso_lines = [l for l in peso_lines if not re.match(r'^[\s]*- \[x\]', l)]
+    peso_content = '\n'.join(peso_lines).strip()
+
+    backlog_content = extract_section(body, "Backlog pessoal")
+    backlog_lines = backlog_content.split('\n')
+    backlog_lines = [l for l in backlog_lines if not re.match(r'^[\s]*- \[x\]', l)]
+    backlog_content = '\n'.join(backlog_lines).strip()
 
     next_body = f"""---
 date: {next_date.isoformat()}
@@ -419,22 +506,64 @@ focus:
 # {next_date.isoformat()}
 
 ## PESO
+{peso_content}
 """
-    for t in pending:
-        next_body += f"- [ ] {t}\n"
-    if not pending:
+    if not peso_content:
+        next_body += "- [ ] \n"
+
+    next_body += f"\n## Backlog pessoal\n{backlog_content}\n"
+    if not backlog_content:
         next_body += "- [ ] \n"
 
     next_body += """
 ## FOCO
 - [ ] 
 
+## Quick Stats
+
+<details>
+<summary>📝 Notas & Reflexões</summary>
+
+## Aprendizados do dia
+
+## Bloqueios e problemas
+
+## Decisões importantes
+
+## Vitória do dia
+
+## Reflexão e gratidão
+
+</details>
+
+<details>
+<summary>🎯 Objetivos & Hábitos</summary>
+
+## Objetivos anuais
+
+## Objetivos diários
+
+## Hábitos
+
+</details>
+
+<details>
+<summary>📊 ActivityWatch</summary>
+
 ## AW
+
+</details>
+
+<details>
+<summary>🤖 Análise LLM</summary>
 
 ## LLM
 
-## NOTAS
+</details>
 
+---
+
+> Cursos e videos importantes vao aqui no final do arquivo.
 """
     next_file.write_text(next_body, encoding="utf-8")
     print(f"   🌅 Created: {next_file.relative_to(paths['vault'])}")
@@ -522,10 +651,18 @@ def cmd_sync(args, cfg, paths):
     if top:
         aw_lines.append(f"")
         aw_lines.append(f"Apps: {', '.join([f'{a} ({t})' for a, t in top])}")
-    aw_block = "\n".join(aw_lines) + "\n"
+    aw_block = "\n".join(aw_lines)
 
-    if "## AW" in content:
-        content = re.sub(r"## AW\n.*?(?=\n## |\Z)", aw_block, content, flags=re.DOTALL)
+    # Insere AW dentro do <details> se existir, senão substitui seção normal
+    if "<summary>📊 ActivityWatch</summary>" in content:
+        content = re.sub(
+            r'(<details>\s*<summary>📊 ActivityWatch</summary>\s*).*?(\s*</details>)',
+            r'\1\n' + aw_block + r'\n\2',
+            content,
+            flags=re.DOTALL
+        )
+    elif "## AW" in content:
+        content = re.sub(r"## AW\n.*?(?=\n## |\Z)", aw_block + "\n", content, flags=re.DOTALL)
     else:
         content = content.rstrip() + "\n\n" + aw_block + "\n"
 
@@ -536,11 +673,18 @@ def cmd_sync(args, cfg, paths):
         print("   🧠 Generating LLM...")
         text = llm_analyze(content, aw_data, cfg)
         print(f"   📝 {text[:200]}...")
-        llm_block = f"\n## LLM\n\n{text}\n"
-        if "## LLM" in content:
-            content = re.sub(r"## LLM\n.*?(?=\n## |\Z)", llm_block, content, flags=re.DOTALL)
+        llm_block = f"## LLM\n\n{text}"
+        if "<summary>🤖 Análise LLM</summary>" in content:
+            content = re.sub(
+                r'(<details>\s*<summary>🤖 Análise LLM</summary>\s*).*?(\s*</details>)',
+                r'\1\n' + llm_block + r'\n\2',
+                content,
+                flags=re.DOTALL
+            )
+        elif "## LLM" in content:
+            content = re.sub(r"## LLM\n.*?(?=\n## |\Z)", llm_block + "\n", content, flags=re.DOTALL)
         else:
-            content = content.rstrip() + "\n" + llm_block + "\n"
+            content = content.rstrip() + "\n\n" + llm_block + "\n"
         current_file.write_text(content, encoding="utf-8")
 
 
